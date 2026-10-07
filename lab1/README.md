@@ -11,4 +11,4 @@ make qemu
 
 看到 `(THU.CST) os is loading ...` 即表示内核已进入 `kern_init` 并通过 SBI 控制台输出。由于内核随后无限循环，请按 `Ctrl+A`、`X` 退出 QEMU。若要调试，在一个终端运行 `make debug`，另一个终端运行 `make gdb`。
 
-课程包未包含 `tools/grade.sh`。本组补充了一个明确标注为“本地自检”的脚本，因此现在可以运行 `make grade`。它依次核对编译产物、ELF 入口地址以及 QEMU/OpenSBI 的实际启动输出，显示 `3/3 PASS` 时只代表这些项目自检通过，不代表助教的官方评分。GDB 调试记录见实验报告第五节。
+原始课程包未包含 `tools/grade.sh`，因此保留的 `make grade` 目标无法运行课程评分。实际构建、QEMU 运行和 GDB 调试记录见实验报告第五节；本仓库没有加入自制评分脚本。
