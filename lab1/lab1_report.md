@@ -123,6 +123,10 @@ kern_entry:
 
 这次修正只涉及启动和调试命令，内核源码未修改。重新执行 `make clean`、`make`、`make qemu`，再用 GDB 检查复位地址、栈顶和 C 入口，结果见第五节。
 
+##### 第三次迭代：补齐本地自动检查
+
+课程压缩包中的 `Makefile` 留有 `make grade` 目标，却没有提供它调用的 `tools/grade.sh`。本组补充了该脚本，使这个目标能在本机执行。脚本先从干净目录编译，再检查 ELF 入口为 `0x80200000`，最后启动 QEMU，确认 OpenSBI 的下一跳地址与内核输出。它是针对本实验编写的本地自检，不是课程或助教提供的评分程序；具体结果见第五节。
+
 ---
 
 ### 练习：理解内核启动中的程序入口操作
@@ -234,7 +238,17 @@ sp             0x80203000
 
 这里的摘录省略了部分反汇编行；两条 `stepi` 的操作步骤见第四节。GDB 记录验证了“复位向量 → 内核入口 → 栈初始化 → C 入口”这条控制流。
 
-模板提出的 `make grade` 在本实验压缩包中无法运行：`Makefile` 指向的 `tools/grade.sh` 并未提供，压缩包原件中也没有该文件。因此本报告不声称通过自动评分。上述图片是 `make qemu` 的实际终端截图；GDB 调试结果以命令和文字记录呈现。
+原始实验包缺少 `tools/grade.sh`，因此本组补充了本地自检脚本。执行 `make grade` 后得到：
+
+```text
+[Lab 1 self-check] This is a local check, not an official course score.
+PASS 1/3: kernel ELF and binary image built
+PASS 2/3: ELF entry is 0x80200000
+PASS 3/3: OpenSBI reached the kernel and the kernel printed its message
+LAB 1 LOCAL SELF-CHECK: 3/3 PASS (not an official course grade)
+```
+
+脚本会先清理并重新编译，再执行上述检查；所以这里的 `3/3 PASS` 是项目自检结果，不是助教评分。如果助教另有官方脚本，应以官方脚本的结果为准。上面的两张图片是 `make qemu` 的实际终端截图；GDB 调试结果以命令和文字记录呈现。
 
 ---
 
