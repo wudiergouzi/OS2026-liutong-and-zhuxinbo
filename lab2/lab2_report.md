@@ -80,11 +80,17 @@ Physical Memory from DTB:
   Size: 0x0000000008000000 (128 MB)
 memory management: best_fit_pmm_manager
 check_alloc_page() succeeded!
-satp virtual address: 0xffffffffc0205000
-satp physical address: 0x0000000080205000
+satp virtual address: 0xffffffffc0204000
+satp physical address: 0x0000000080204000
 ```
 
-内核最后进入无限循环，因此运行画面不会自行退出。测试时使用 `timeout` 主动停止 QEMU；超时终止不是内核断言失败。
+以下两张为刘通在本仓库 `lab2` 目录运行 `make qemu` 的连续终端截图：第一张记录编译命令和 OpenSBI 启动，第二张记录设备树内存信息、Best-Fit 管理器和分配检查结果。
+
+![Lab 2 make qemu 编译与 OpenSBI 启动](images/qemu_build.png)
+
+![Lab 2 make qemu 内核启动和物理页分配检查](images/qemu_result.png)
+
+内核最后进入无限循环，因此运行画面不会自行退出。人工运行时用 `Ctrl+A`、`X` 退出 QEMU；自动复核时曾用 `timeout` 主动停止，超时终止不是内核断言失败。
 
 课程包自带的 `make grade` 会先复制源码到临时目录，再注入 `tools/test_lab2.c` 中的两个检查，原工作目录不会被注入。实际测试结果为：
 
