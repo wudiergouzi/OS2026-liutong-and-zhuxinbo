@@ -1,1 +1,6 @@
-# OS2026-liutong-and-zhuxinbo
+# 操作系统实验
+
+刘通（2411526）与朱信博（2411339）的小组仓库。
+
+- [Lab 1：最小可执行内核](lab1/README.md)
+- [Lab 2：物理内存管理](lab2/README.md)
