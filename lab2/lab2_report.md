@@ -95,6 +95,10 @@ lab2 injection complete
 Total Score: 20/20
 ```
 
+下图是刘通在 WSL 中从本仓库的 `lab2` 目录实际运行 `make grade` 的终端截图，两项 `OK` 和总分均可见。
+
+![Lab 2 课程评分脚本运行结果：20/20](images/grade_20_of_20.png)
+
 两项分别验证页初始化关键不变量和 Best-Fit 管理器选择；此外内核自己的 `best_fit_check` 在启动过程中通过，才打印 `check_alloc_page() succeeded!`。这些是本机课程包脚本与当前 QEMU 环境下的运行结果，不代替助教在其环境中的最终验收。
 
 ## 六、实验总结与收获
