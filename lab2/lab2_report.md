@@ -184,6 +184,36 @@ Buddy 构建显示 `memory management: buddy_pmm_manager`、`buddy_check() succe
 
 如果操作系统事先不知道可用物理内存，可以依赖固件或启动加载器提供的机器描述，例如本实验的设备树 `/memory` 节点；在其他平台也可能由固件内存映射表提供。关键不是假设一块固定 RAM，而是先读出范围，再排除固件、内核、设备保留区等不可分配范围。本实验读取了 DTB，但页描述符布局仍以 QEMU `virt` 的 DRAM 起点为前提，不能直接推广到任意物理内存拓扑。
 
+### 分支任务：双 GDB 观察 QEMU 页表查询
+
+这项调试不参与上述 `make grade` 的 20 分评分。为观察模拟器内部行为，另从 QEMU 4.1.1 源码以 `--enable-debug` 构建 `riscv64-softmmu/qemu-system-riscv64`，没有执行 `make install`，因此未替换系统 QEMU。三个终端的职责分别是：运行带 `-s -S` 的 QEMU；用主机 x86-64 GDB 附加 QEMU 进程、查看其 C 源码；用 `gdb-multiarch` 连接 QEMU 的 1234 端口、调试客户机 RISC-V 内核。普通用户附加 QEMU 时曾遇到 `ptrace: Operation not permitted`，随后用 `sudo gdb` 成功附加；没有为了调试而永久放宽系统 `ptrace_scope`。主机 GDB 和客户机 GDB 同时工作的原始终端截图如下：
+
+![主机 GDB：QEMU 地址转换断点及运行结果，原始终端截图](images/dual_gdb_host.png)
+
+![客户机 GDB：在 kern_init 处停下，原始终端截图](images/dual_gdb_guest.png)
+
+**调用路径和关键分支。** 对这次内核入口的取指，QEMU 4.1.1 在 `accel/tcg/cputlb.c` 的 `get_page_addr_code` 中先按 `mmu_idx` 和虚拟地址索引软件 TLB；条目无效时再检查 victim TLB，仍未命中才调用 `tlb_fill`。RISC-V 的回调 `target/riscv/cpu_helper.c:riscv_cpu_tlb_fill` 调用 `get_physical_address`，后者依据 `satp` 的模式和根页表物理页号执行 Sv39 查表。成功后，`riscv_cpu_tlb_fill` 调用 `tlb_set_page`，将本次映射和访问权限写回 QEMU 的软件 TLB。对普通数据读取、写入，`cputlb.c` 中分别还有 `load_helper`、`store_helper` 的 TLB 检查路径；这里实际单步演示的是指令取指路径，不把它误称为所有访存指令共用的同一入口。
+
+**一次真实的页表遍历。** 客户机 GDB 在 `kern_init` 停下的 PC 为 `0xffffffffc02000d6`；主机 GDB 对同一地址命中 `get_physical_address`，`access_type=2` 为取指，`mmu_idx=1` 为 S 模式。测得 `satp=0x8000000000080205`，其高位模式为 Sv39，根页表物理地址为 `0x80205000`。在 `cpu_helper.c` 的查表循环中单步到读取页表项之后，测得 `levels=3`、`i=0`、`idx=0x1ff`、`pte_addr=0x80205ff8`、`pte=0x200000cf`。循环先由虚拟地址取当前级索引，计算 `base + idx * ptesize`，从客户机物理内存读出 PTE，随后检查有效位、叶子权限、对齐及访问权限。这个 PTE 的 V/R/W/X 位均为 1，属于顶级叶子项，映射 1 GiB 大页；所以虽然 Sv39 最多有三级，这次实际只走了第一级，不能宣称执行了三次循环。PTE 的 PPN 对应 `0x80000000`，加上虚拟地址在该大页中的偏移 `0x2000d6`，得到物理地址 `0x802000d6`。QEMU 函数输出给 TLB 的页基址是 `0x80200000`；返回值 `ret=0` 表示转换成功。曾在 `finish` 后看到调用者局部变量 `ret=1`，原因是赋值语句尚未执行；单步 `next` 后才读到正确的 `ret=0`。
+
+下面的独立测试又分别在计算 `pte_addr` 和执行 `ldq_phys` 时使用 GDB 的 `next` 单步：索引 `0x1ff` 与页表基址 `0x80205000` 算出页表项地址 `0x80205ff8`，下一次单步读到 PTE 值 `0x200000cf`。
+
+![页表项地址计算及物理内存读取的 GDB 单步输出转图](images/walk_steps.png)
+
+![QEMU 页表项读取和转换结果；由独立 GDB 批处理的真实输出转成证据图，非桌面原始截图](images/page_walk.png)
+
+**TLB 未命中与填充。** 对同一虚拟地址，在 `get_page_addr_code` 调用 `tlb_fill` 前读到 `entry->addr_code=0xffffffffffffffff`，表示此项没有可用的取指映射；执行填充后读到 `0xffffffffc0200000`，即包含目标地址的虚拟页标签。随后源码中的 `assert(tlb_hit(...))` 能继续通过。这个结果说明先尝试软件 TLB，再经页表查询填充，不是每次取指都重新遍历页表。QEMU 的条目除了虚拟页标签与权限，还保存可通向主机 RAM 的 `addend` 等信息，以服务软件模拟的快速访存；真实 CPU 的 TLB 则是硬件结构，逻辑上缓存虚拟页到物理页的翻译与权限，不会保存 QEMU 的主机指针。
+
+![QEMU 软件 TLB 未命中及填充后页标签；真实批处理输出转图](images/tlb_miss.png)
+
+**与未开启分页的取指对照。** 在初始 M 模式执行地址 `0x1000` 的取指时，测得 `satp=0`、`mmu_idx=3`。`get_physical_address` 直接返回物理地址 `0x1000`，没有进入 Sv39 查表循环；但 QEMU 的软件 TLB 初始条目仍为 `0xffffffffffffffff`，填充后取指标签为 `0x1000`。因此“QEMU 使用软件 TLB 加速模拟访问”和“客户机是否启用页表翻译”是两件事；M 模式这次的映射为恒等映射，不能据此说真实硬件在 bare 模式也进行了页表遍历。
+
+![M 模式恒等地址转换；真实批处理输出转图](images/bare_mode.png)
+
+![M 模式仍使用 QEMU 软件 TLB；真实批处理输出转图](images/bare_tlb.png)
+
+调试时，Codex 帮助定位 QEMU 4.1.1 的 `get_page_addr_code`、`tlb_fill`、`riscv_cpu_tlb_fill`、`get_physical_address` 和页表项读取位置，建议使用条件断点只观察指定虚拟地址，再通过实际 GDB 值核对“TLB 未命中—页表查询—填充”链路。这里记录的是工作过程摘要，并非 DeepSeek 或 Codex 的逐字对话。五张批处理证据图均由另起的调试版 QEMU 实例的真实 GDB 输出生成，没有修改正在运行的双 GDB 会话；它们明确标为输出转图，不冒充人工终端截图。独立测试脚本和完整文本日志保存在仓库外，仓库中只放课程报告所需的图片。
+
 ## 六、实验知识与 OS 原理
 
 | 本实验中的知识点 | 对应的 OS 原理、联系与区别 |
