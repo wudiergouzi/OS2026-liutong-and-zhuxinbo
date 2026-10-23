@@ -1,11 +1,13 @@
 #include <default_pmm.h>
 #include <best_fit_pmm.h>
+#include <buddy_pmm.h>
 #include <defs.h>
 #include <error.h>
 #include <memlayout.h>
 #include <mmu.h>
 #include <pmm.h>
 #include <sbi.h>
+#include <slub.h>
 #include <stdio.h>
 #include <string.h>
 #include <riscv.h>
@@ -34,7 +36,11 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
+#ifdef LAB2_BUDDY_TEST
+    pmm_manager = &buddy_pmm_manager;
+#else
     pmm_manager = &best_fit_pmm_manager;
+#endif
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -61,31 +67,39 @@ size_t nr_free_pages(void) {
     return pmm_manager->nr_free_pages();
 }
 
-// Build descriptors for RAM pages, reserving the kernel and descriptor array.
+// lab2 function1 2411526: build page descriptors and reserve occupied RAM.
 static void page_init(void) {
     extern char end[];
     uintptr_t mem_base = get_memory_base();
     uintptr_t mem_size = get_memory_size();
     assert(mem_base == DRAM_BASE && mem_size > 0);
-    assert(mem_base + mem_size > mem_base);
+    assert(mem_size <= (uintptr_t)-1 - mem_base);
 
     va_pa_offset = PHYSICAL_MEMORY_OFFSET;
     uintptr_t mem_end = mem_base + mem_size;
+    cprintf("page_init: RAM [0x%016lx, 0x%016lx)\n", mem_base, mem_end);
     npage = PPN(mem_end);
     assert(npage > nbase);
 
     pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
     size_t managed_pages = npage - nbase;
-    uintptr_t free_start = ROUNDUP((uintptr_t)(pages + managed_pages), PGSIZE);
+    uintptr_t descriptors_end = (uintptr_t)(pages + managed_pages);
+    assert(descriptors_end >= (uintptr_t)pages);
+    assert(PADDR(descriptors_end) <= mem_end);
+    uintptr_t free_start = ROUNDUP(descriptors_end, PGSIZE);
     free_start = PADDR(free_start);
-    assert(free_start < mem_end);
 
     for (size_t i = 0; i < managed_pages; i++) {
         SetPageReserved(&pages[i]);
         pages[i].property = 0;
         set_page_ref(&pages[i], 0);
     }
-    init_memmap(pa2page(free_start), (mem_end - free_start) / PGSIZE);
+    if (free_start < mem_end) {
+        size_t free_pages = (mem_end - free_start) / PGSIZE;
+        if (free_pages > 0) {
+            init_memmap(pa2page(free_start), free_pages);
+        }
+    }
 }
 
 /* pmm_init - initialize the physical memory management */
@@ -103,6 +117,11 @@ void pmm_init(void) {
 
     // use pmm->check to verify the correctness of the alloc/free function in a pmm
     check_alloc_page();
+
+#ifdef LAB2_SLUB_TEST
+    slub_init();
+    slub_check();
+#endif
 
     extern char boot_page_table_sv39[];
     satp_virtual = (pte_t*)boot_page_table_sv39;

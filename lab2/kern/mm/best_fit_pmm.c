@@ -3,6 +3,7 @@
 #include <best_fit_pmm.h>
 #include <stdio.h>
 
+// lab2 function2-2 2411339: allocate contiguous pages with Best-Fit.
 static free_area_t free_area;
 
 #define free_list (free_area.free_list)
