@@ -121,6 +121,25 @@ static size_t buddy_nr_free_pages(void) {
     return free_count;
 }
 
+static int buddy_free_block_covers(struct Page *first, struct Page *last,
+                                   unsigned int min_order) {
+    if (first > last) {
+        struct Page *tmp = first;
+        first = last;
+        last = tmp;
+    }
+    for (unsigned int order = min_order; order < BUDDY_ORDERS; order++) {
+        list_entry_t *head = &free_lists[order];
+        for (list_entry_t *le = list_next(head); le != head; le = list_next(le)) {
+            struct Page *block = le2page(le, page_link);
+            if (block <= first && last < block + block_pages(order)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 // lab2 test2-3 2411526: split, round up, merge, failure, and count invariants.
 static void buddy_check(void) {
     size_t before = free_count;
@@ -129,13 +148,16 @@ static void buddy_check(void) {
 
     struct Page *a = buddy_alloc_pages(1);
     struct Page *b = buddy_alloc_pages(1);
-    assert(a != NULL && b == a + 1);
+    assert(a != NULL && b != NULL && a != b);
     assert(free_count == before - 2);
     buddy_free_pages(a, 1);
     buddy_free_pages(b, 1);
     assert(free_count == before);
+    if (((size_t)(a - pages) ^ 1) == (size_t)(b - pages)) {
+        assert(buddy_free_block_covers(a, b, 1));
+    }
     struct Page *pair = buddy_alloc_pages(2);
-    assert(pair == a);
+    assert(pair != NULL && free_count == before - 2);
     buddy_free_pages(pair, 2);
 
     struct Page *three = buddy_alloc_pages(3);
@@ -143,9 +165,12 @@ static void buddy_check(void) {
     buddy_free_pages(three, 3);
     assert(free_count == before);
     struct Page *four = buddy_alloc_pages(4);
-    assert(four == three);
-    buddy_free_pages(four, 4);
+    assert(four != NULL && free_count == before - 4);
+    buddy_free_pages(four, 2);
+    assert(free_count == before - 2);
+    buddy_free_pages(four + 2, 2);
     assert(free_count == before);
+    assert(buddy_free_block_covers(four, four + 3, 2));
     cprintf("buddy_check() succeeded!\n");
 }
 
