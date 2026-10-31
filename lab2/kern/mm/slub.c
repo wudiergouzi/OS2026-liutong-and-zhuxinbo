@@ -36,7 +36,8 @@ void slub_init(void) {
 }
 
 void *slub_alloc(size_t size) {
-    if (size == 0 || size > (size_t)-1 - PGSIZE) {
+    size_t header_size = ROUNDUP(sizeof(struct slab), SLUB_MIN_SIZE);
+    if (size == 0 || size > (size_t)-1 - header_size) {
         return NULL;
     }
     unsigned int index = 0;
@@ -44,7 +45,8 @@ void *slub_alloc(size_t size) {
         index++;
     }
     if (index == SLUB_CLASSES) {
-        size_t count = (size + PGSIZE) / PGSIZE;
+        size_t total = size + header_size;
+        size_t count = total / PGSIZE + (total % PGSIZE != 0);
         struct Page *page = alloc_pages(count);
         if (page == NULL) {
             return NULL;
@@ -127,6 +129,18 @@ void slub_free(void *object) {
 void slub_check(void) {
     size_t before = nr_free_pages();
     assert(slub_alloc(0) == NULL);
+    void *boundary = slub_alloc(PGSIZE - 1);
+    assert(boundary != NULL);
+    struct slab *boundary_slab = (struct slab *)ROUNDDOWN((uintptr_t)boundary, PGSIZE);
+    assert(boundary_slab->page_count >= 2);
+    memset(boundary, 0x55, PGSIZE - 1);
+    slub_free(boundary);
+    boundary = slub_alloc(2 * PGSIZE - 1);
+    assert(boundary != NULL);
+    boundary_slab = (struct slab *)ROUNDDOWN((uintptr_t)boundary, PGSIZE);
+    assert(boundary_slab->page_count >= 3);
+    memset(boundary, 0x55, 2 * PGSIZE - 1);
+    slub_free(boundary);
     void *many[260];
     for (size_t i = 0; i < 260; i++) {
         many[i] = slub_alloc(16);
