@@ -75,10 +75,10 @@ DTB init completed
 
 Special kernel symbols:
   entry  0xc020004a (virtual)
-  etext  0xc0204a22 (virtual)
-  edata  0xc020a030 (virtual)
-  end    0xc020e4f0 (virtual)
-Kernel executable memory footprint: 58KB
+  etext  0xc0205672 (virtual)
+  edata  0xc020b030 (virtual)
+  end    0xc020f4f4 (virtual)
+Kernel executable memory footprint: 62KB
 memory management: best_fit_pmm_manager
 check_alloc_page() succeeded!
 check_pgdir() succeeded!
@@ -93,13 +93,17 @@ check_vmm() succeeded.
 [Edge fork OOM cleanup] PASS
 ++ setup timer interrupts
 [Test Schedule] PASS
+[Lifecycle zombie reap/status/double wait] PASS
+[Lifecycle blocking wait/wakeup/ownership] PASS
+[Lifecycle explicit exit/interrupt state preserved] PASS
+[Lifecycle targeted and any-child wait] PASS
+[Lifecycle live and zombie orphan adoption] PASS
+[Lifecycle repeated create/exit/reap, free pages restored] PASS
+[Lifecycle PID wraparound] PASS
 this initproc, pid = 1, name = "init"
 To U: "Hello world!!".
 To U: "en.., Bye, Bye. :)"
-kernel panic at kern/process/proc.c:209:
-    process exit!!.
+[Lifecycle idle adoption] PASS
+[Process cleanup] all kernel threads reaped
 
-Welcome to the kernel debug monitor!!
-Type 'help' for a list of commands.
-
-All additional Lab 4 failure-path checks passed.
+All additional Lab 4 failure-path and lifecycle checks passed.

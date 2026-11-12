@@ -52,6 +52,9 @@ struct proc_struct
     struct trapframe *tf;         // Trap frame for current interrupt
     uintptr_t pgdir;              // the base addr of Page Directroy Table(PDT)
     uint32_t flags;               // Process flag
+    int exit_code;                // Retained until the parent reaps this thread
+    bool waiting_child;           // Sleeping in do_wait, rather than another wait
+    int wait_pid;                 // 0: any child; positive: a specific child
     char name[PROC_NAME_LEN + 1]; // Process name
     list_entry_t list_link;       // Process link list
     list_entry_t hash_link;       // Process hash list
@@ -72,6 +75,8 @@ void cpu_idle(void) __attribute__((noreturn));
 
 struct proc_struct *find_proc(int pid);
 int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf);
-int do_exit(int error_code);
+int do_exit(int error_code) __attribute__((noreturn));
+// Kernel-only interface: code_store must be NULL or a writable kernel pointer.
+int do_wait(int pid, int *code_store);
 
 #endif /* !__KERN_PROCESS_PROC_H__ */

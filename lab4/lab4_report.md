@@ -19,7 +19,7 @@
 
 第一步继承 Lab 2 页描述符和连续物理页分配，以及 Lab 3 Trap 入口、恢复、中断和异常分类。在这个基础上，`page_insert/page_remove` 管理映射、物理页引用和 TLB；VMA 框架用 `mm_struct/vma_struct` 描述虚拟区域。第二步分配 PCB、内核栈和首次运行现场，把线程加入 PID 哈希表及进程链表并置为可运行。第三步从链表选择线程，更新 current、切换 satp、保存和恢复 context，最终进入线程函数。
 
-内核线程共享内核地址空间，`mm == NULL`，不等于拥有独立用户地址空间的用户进程。本实验也没有实现按需缺页分配、页面置换或完整进程退出回收。
+内核线程共享内核地址空间，`mm == NULL`，不等于拥有独立用户地址空间的用户进程。在三个基础模块之外，本实验进一步实现内核线程退出、父线程等待、孤儿收养和僵尸资源回收；未实现按需缺页分配、页面置换或用户进程资源释放。
 
 ## 2. 功能模块一：虚拟内存页操作
 
@@ -107,7 +107,21 @@ spec 来自 schedule 的候选状态、proc_run 的原子性要求，以及 cont
 
 `switch_to` 按 context 的 14 个槽保存旧线程 ra/sp/s0-s11，再从新 context 恢复它们，最后 ret。普通调用约定允许调用者保存寄存器在函数调用期间变化，因此 context 不需要像 Trap frame 一样保存全部通用寄存器。首次切换用预置 ra 进入 forkret，后续切换用以前保存的 ra 恢复原调用链。
 
-本实验没有增加定时器抢占调度；测试线程通过调用 schedule 主动让出 CPU。框架 `do_exit` 仍为 panic 占位，线程返回后进入 kmonitor，其现有实现调用 SBI 关机，未实现僵尸回收和 wait。
+本实验没有增加定时器抢占调度；测试线程通过调用 schedule 主动让出 CPU。线程函数返回时，kernel_thread_entry 将函数返回值交给 do_exit；本次扩展让它进入正常退出和回收流程，不再以框架 panic 作为正常结束。
+
+### 扩展：线程退出、等待与回收
+
+新增接口 `do_wait(int pid, int *code_store)`：pid=0 表示等待任意子线程，正数表示指定子线程；成功回收返回 0，并可写回退出码；没有对应子线程返回 `-E_BAD_PROC`，非法 PID 返回 `-E_INVAL`。该接口仅供当前内核线程调用，code_store 必须为 NULL 或可写的内核地址，不是尚未实现的用户态 wait 系统调用。
+
+PCB 新增 exit_code、waiting_child、wait_pid。do_exit 在关中断临界区记录退出码并设置 ZOMBIE，将尚存子线程转交给仍存活的 initproc；若 init 本身正在退出或已不存活，则转交给 idleproc。已经是僵尸的被收养线程也触发相应等待通知。随后唤醒正在等待该子线程的父线程并 schedule，僵尸不再参与 RUNNABLE 选择。
+
+线程不能释放仍在使用的自身内核栈。因此 do_exit 只标记退出，不在当前栈上执行 put_kstack/kfree。父线程 do_wait 确认子线程为僵尸后，解除 proc_list 和 PID 哈希链接，减少 nr_process，从父线程自己的执行栈上归还子线程栈页并释放 PCB。若回收的是 initproc，同时清空全局指针，避免悬空引用。所有线程共享的 boot_pgdir 不随某个线程退出而释放。
+
+do_wait 将“检查子线程、设置等待条件、进入 SLEEPING”放在同一个关中断临界区，避免检查之后、睡眠之前丢失退出唤醒。schedule 返回后重新扫描，正确处理指定 PID、任意子线程和重新检查条件。调用前的中断状态在最终返回时恢复；嵌套调用不会无条件开启中断。
+
+idle 复用启动栈，不能像普通线程一样阻塞等待或退出。cpu_idle 增加非阻塞扫描，只回收归它所有的僵尸线程；init 退出后剩余子线程由 idle 接管。直到 nr_process=1、proc_list 为空且 initproc 已清空，才输出 `[Process cleanup] all kernel threads reaped` 并正常请求 SBI 关机。程序仍可以继续调度尚存的可运行线程，不会在任意一个线程退出时直接关机。
+
+这部分的 spec 是“退出不返回、保留退出码、延迟释放当前栈、父线程只能回收自己的子线程、无丢失唤醒、孤儿最终可回收”。实现提示约束据此组织为：阅读 PCB/调度/调用返回链；替换 panic 型 do_exit 并增加 do_wait 和 idle 回收；保留共享内核页表、在临界区发布状态与唤醒；验证多种退出次序、重复回收、资源恢复和 PID 绕回。提示内容是实现要求整理，不冒充历史逐字对话。
 
 ## 5. AI 辅助实现、编译与调试中的问题
 
@@ -117,7 +131,7 @@ spec 来自 schedule 的候选状态、proc_run 的原子性要求，以及 cont
 4. 初次运行在 `boot_pgdir_va[0] & PTE_U` 的断言停止。Sv39 非叶项的 U/A/D 应清零，因此目录项使用 V，不沿用旧权限写法；将这一个架构不兼容断言改为检查 U/A/D 均为 0，同时保留叶子项 U/W 的检查。这是明确的测试适配，不声称所有课程测试源码逐字未改。
 5. 启动大页不能直接交给仅面向 4 KiB 三级页表的 get_pte 遍历。因此保留临时启动映射，另建预映射内核页表后切换；静态映射检查中的物理地址循环使用 uintptr_t，并从 PADDR(KERNBASE) 开始，避免原 int 变量截断及错误的虚拟/物理边界比较。
 6. 沿用前两次实验的 QEMU 兼容修正：用 -kernel 加载映像，启动页表加入低地址恒等映射。评分环境使用可用的 gdb-multiarch，增加构建失败即退出及 GDB 超时，避免失败后挂起。
-7. 附加测试最初预期最终进程会停在 monitor 等待超时；实际发现框架 kmonitor 会立即执行 sbi_shutdown，因此 QEMU 正常返回 0。修正附加测试的结束条件为正常退出，仍要求所有 PASS 标记及预期 do_exit 提示同时出现。
+7. 初版框架的 do_exit 会 panic，再由 kmonitor 关机，不能证明线程回收完成。本次扩展删除该正常路径，改由父线程/idle 回收后关机；测试同时检查 QEMU 返回 0、全部生命周期标记以及没有 kernel panic，避免把错误处理中的关机当成成功。
 
 上述过程区分实现失误、课程兼容问题和测试预期错误，没有把静态推断当作运行结果。
 
@@ -143,16 +157,27 @@ Total Score: 30/30
 
 PMM 测试覆盖首次映射、同页权限更新、映射替换、引用变化和重复删除；创建测试检查 idle/init 的 PID、状态、父线程和首次 context；调度测试创建两个线程并多次主动让出 CPU，检查两者均实际运行。
 
-附加测试源码独立存于 `tools/test_lab4_edges.c`，由 check_edges.py 在临时目录中注入和编译，未增加课程分值：
+附加测试源码独立存于 `tools/test_lab4_edges.c` 和 `tools/test_lab4_lifecycle.c`，由 check_edges.py 在临时目录中注入和编译，未增加课程分值。课程调度测试源文件仍保留；仅在附加测试的临时副本中，将两个测试线程的末尾无限循环改为 return 0，使其在原有三次主动让出后可退出，以便继续验证 wait/reap。
 
 ```text
 [Edge PMM OOM rollback] PASS
 [Edge fork OOM cleanup] PASS
 [Test Schedule] PASS
-All additional Lab 4 failure-path checks passed.
+[Lifecycle zombie reap/status/double wait] PASS
+[Lifecycle blocking wait/wakeup/ownership] PASS
+[Lifecycle explicit exit/interrupt state preserved] PASS
+[Lifecycle targeted and any-child wait] PASS
+[Lifecycle live and zombie orphan adoption] PASS
+[Lifecycle repeated create/exit/reap, free pages restored] PASS
+[Lifecycle PID wraparound] PASS
+[Lifecycle idle adoption] PASS
+[Process cleanup] all kernel threads reaped
+All additional Lab 4 failure-path and lifecycle checks passed.
 ```
 
 页表 OOM 测试耗尽空闲页，分别保留 0 页、1 页，验证 get_pte 无法完成中间页表时 root 不留下项、目标页引用不变、刚申请的页被归还，释放测试资源后空闲总数恢复。线程 OOM 测试在无空闲页时创建线程，验证返回 -E_NO_MEM、current 不变及清理后页数恢复。
+
+生命周期测试覆盖先退出后等待、先等待再退出、正常返回与显式 do_exit、正负退出码、等待非子线程、重复等待、指定和任意 PID、活孤儿及僵尸孤儿收养、init 退出后的 idle 收养。还执行 MAX_PID+8（8200）次创建—退出—等待，跨过 PID 分配边界，每次验证旧 PID 从哈希表消失，最后断言空闲物理页数恢复到循环前数值。共享分配器仍可保留自身缓存，PCB 内存通过 kfree 归还给分配器；测试不把“每次都把分配器缓存退给物理页管理器”作为线程回收语义。
 
 普通启动通过 `check_alloc_page`、`check_pgdir`、`check_boot_pgdir`、`check_vma_struct`、`check_vmm`，随后实际输出：
 
@@ -162,7 +187,7 @@ To U: "Hello world!!".
 To U: "en.., Bye, Bye. :)"
 ```
 
-随后出现框架预设 `process exit!!.` panic 并经 monitor 关机，不能将其写成“完整退出回收成功”。内置 30/30 仅表示所覆盖测试通过，不代替课程最终评定。原始运行日志保存在 `evidence/`。
+随后输出 `[Process cleanup] all kernel threads reaped`，QEMU 正常返回 0，日志没有 kernel panic。课程评分仍为 30/30；评分脚本在 do_exit 入口结束调度演示，正常关机和完整回收由普通启动及独立生命周期测试验证。内置分数仅表示所覆盖测试通过，不代替课程最终评定。最新运行日志保存在 `evidence/`。
 
 ## 7. 实验知识点与 OS 原理的对应
 
@@ -176,10 +201,11 @@ To U: "en.., Bye, Bye. :)"
 | schedule 与 proc_run | 调度策略和调度执行 | 前者决定选谁，后者组织 current/地址空间/现场切换。 |
 | local_intr_save/restore | 单核临界区与原子性 | 避免切换到一半被同级中断打断；不能替代多核锁，也不屏蔽同步异常。 |
 | do_fork 失败回滚 | 资源所有权和事务式创建 | 未挂链前资源归创建者，失败必须逆序释放，不能留下可运行的半成品。 |
+| do_exit/do_wait/idle 回收 | 僵尸状态、父子关系与延迟销毁 | 退出保留状态供父线程读取；换到其他栈后才能销毁原内核栈，孤儿需有收养者。 |
 
 ## 8. 原理中重要但本实验未覆盖的内容
 
-未实现用户程序装载、独立用户地址空间复制、写时复制、系统调用、完整 exit/wait 和僵尸回收、按需缺页、换入换出、多核 TLB shootdown、优先级与时间片抢占、公平性和实时性保证、阻塞唤醒的完整等待队列。这些机制需要在目前的 PCB、VMA、页表和调度接口基础上继续扩展。
+未实现用户程序装载、独立用户地址空间复制、写时复制、用户态 exit/wait 系统调用与用户地址校验、文件及用户页表的退出释放、按需缺页、换入换出、多核 TLB shootdown、优先级与时间片抢占、公平性和实时性保证、通用设备等待队列。当前已实现内核线程的退出、等待与僵尸回收，不能将其扩大解释为完整用户进程资源管理。这些机制需要在目前的 PCB、VMA、页表和调度接口基础上继续扩展。
 
 ## 9. 扩展练习
 

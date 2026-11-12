@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <sbi.h>
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -199,13 +200,89 @@ put_kstack(struct proc_struct *proc)
 }
 
 
-// do_exit - called by sys_exit
-//   1. call exit_mmap & put_pgdir & mm_destroy to free the almost all memory space of process
-//   2. set process' state as PROC_ZOMBIE, then call wakeup_proc(parent) to ask parent reclaim itself.
-//   3. call scheduler to switch to other process
+// Extension 2411339: exit/wait/reap for this lab's shared-address-space threads.
+// All lifecycle operations below run with local interrupts disabled.
+static void notify_parent(struct proc_struct *child)
+{
+    struct proc_struct *parent = child->parent;
+    if (parent != NULL && parent->state == PROC_SLEEPING && parent->waiting_child &&
+        (parent->wait_pid == 0 || parent->wait_pid == child->pid)) {
+        wakeup_proc(parent);
+    }
+    if (parent == idleproc) idleproc->need_resched = 1;
+}
+
+static void reap_proc(struct proc_struct *proc)
+{
+    assert(proc != current && proc != idleproc);
+    assert(proc->state == PROC_ZOMBIE && proc->parent == current);
+    assert(proc->mm == NULL && proc->pgdir == boot_pgdir_pa);
+    list_del(&proc->list_link);
+    list_del(&proc->hash_link);
+    nr_process--;
+    if (proc == initproc) initproc = NULL;
+    // Safe now: the CPU is executing on the parent's stack, not this stack.
+    put_kstack(proc);
+    kfree(proc);
+}
+
 int do_exit(int error_code)
 {
-    panic("process exit!!.\n");
+    assert(current != NULL && current != idleproc && current->mm == NULL);
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    current->exit_code = error_code;
+    current->waiting_child = 0;
+    current->state = PROC_ZOMBIE;
+    struct proc_struct *adopter = initproc;
+    if (adopter == NULL || adopter == current || adopter->state == PROC_ZOMBIE)
+        adopter = idleproc;
+    for (list_entry_t *le = list_next(&proc_list); le != &proc_list; le = list_next(le)) {
+        struct proc_struct *child = le2proc(le, list_link);
+        if (child->parent == current) {
+            child->parent = adopter;
+            if (child->state == PROC_ZOMBIE) notify_parent(child);
+        }
+    }
+    notify_parent(current);
+    schedule();
+    // A zombie is never eligible for scheduling and must not return on its stack.
+    panic("zombie thread resumed");
+}
+
+int do_wait(int pid, int *code_store)
+{
+    if (pid < 0 || pid >= MAX_PID) return -E_INVAL;
+    assert(current != NULL && current != idleproc);
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    while (1) {
+        bool has_child = 0;
+        for (list_entry_t *le = list_next(&proc_list); le != &proc_list; le = list_next(le)) {
+            struct proc_struct *child = le2proc(le, list_link);
+            if (child->parent == current && (pid == 0 || child->pid == pid)) {
+                has_child = 1;
+                if (child->state == PROC_ZOMBIE) {
+                    if (code_store != NULL) *code_store = child->exit_code;
+                    reap_proc(child);
+                    local_intr_restore(intr_flag);
+                    return 0;
+                }
+            }
+        }
+        if (!has_child) {
+            local_intr_restore(intr_flag);
+            return -E_BAD_PROC;
+        }
+        // Scan and sleep are atomic with respect to exit notifications.
+        current->wait_pid = pid;
+        current->waiting_child = 1;
+        current->state = PROC_SLEEPING;
+        schedule();
+        current->waiting_child = 0;
+        current->wait_pid = 0;
+        // Re-scan after wakeup, including adoption or a spurious wakeup.
+    }
 }
 
 // init_main - the second kernel thread used to create user_main kernel threads
@@ -315,6 +392,20 @@ void proc_init(void)
 void cpu_idle(void)
 {
     while (1) {
+        bool intr_flag;
+        local_intr_save(intr_flag);
+        list_entry_t *le = list_next(&proc_list);
+        while (le != &proc_list) {
+            struct proc_struct *proc = le2proc(le, list_link);
+            le = list_next(le);
+            if (proc->parent == idleproc && proc->state == PROC_ZOMBIE) reap_proc(proc);
+        }
+        if (nr_process == 1) {
+            assert(list_empty(&proc_list) && initproc == NULL);
+            cprintf("[Process cleanup] all kernel threads reaped\n");
+            sbi_shutdown();
+        }
+        local_intr_restore(intr_flag);
         if (current->need_resched) schedule();
     }
 }

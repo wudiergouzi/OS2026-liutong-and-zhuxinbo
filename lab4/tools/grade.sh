@@ -320,7 +320,7 @@ swapimg=$(make_print swapimg)
 qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## set break-function, default is readline
-brkfun=readline
+brkfun=do_exit
 
 run_qemu
 

@@ -52,6 +52,8 @@ riscv64-unknown-elf-ld: removing unused section '.text.mm_destroy' in file 'obj/
 riscv64-unknown-elf-ld: removing unused section '.text.set_proc_name' in file 'obj/kern/process/proc.o'
 riscv64-unknown-elf-ld: removing unused section '.text.get_proc_name' in file 'obj/kern/process/proc.o'
 riscv64-unknown-elf-ld: removing unused section '.text.find_proc' in file 'obj/kern/process/proc.o'
+riscv64-unknown-elf-ld: removing unused section '.rodata.do_wait.str1.8' in file 'obj/kern/process/proc.o'
+riscv64-unknown-elf-ld: removing unused section '.text.do_wait' in file 'obj/kern/process/proc.o'
 riscv64-unknown-elf-ld: removing unused section '.text.sprintputch' in file 'obj/libs/printfmt.o'
 riscv64-unknown-elf-ld: removing unused section '.text.snprintf' in file 'obj/libs/printfmt.o'
 riscv64-unknown-elf-ld: removing unused section '.text.vsnprintf' in file 'obj/libs/printfmt.o'

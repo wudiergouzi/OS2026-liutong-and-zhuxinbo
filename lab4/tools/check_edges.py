@@ -11,11 +11,24 @@ with tempfile.TemporaryDirectory(prefix="lab4-edges-") as temp:
     shutil.copytree(source, root, ignore=shutil.ignore_patterns("obj", "bin", ".git"))
     subprocess.run(["python3", str(root / "tools/inject.py"), str(root)], check=True)
     shutil.copyfile(root / "tools/test_lab4_edges.c", root / "kern/test/test_lab4_edges.c")
+    shutil.copyfile(root / "tools/test_lab4_lifecycle.c", root / "kern/test/test_lab4_lifecycle.c")
     header = root / "kern/test/test_lab4.h"
-    header.write_text(header.read_text() + "\nvoid test_lab4_edges(void);\nvoid test_lab4_fork_oom(void);\n")
+    header.write_text(header.read_text() + "\nvoid test_lab4_edges(void);\nvoid test_lab4_fork_oom(void);\nvoid test_lab4_lifecycle(void);\n")
+    # Keep the course source intact. In this separate stress-test copy only,
+    # workers return after the original three yields so wait/reap can be tested.
+    course_test = root / "kern/test/test_lab4.c"
+    original = course_test.read_text()
+    forever = """    while (1)
+    {
+        current->need_resched = 1;
+        schedule();
+    }"""
+    assert original.count(forever) == 1
+    course_test.write_text(original.replace(forever, "    return 0;"))
     for relative, anchor, call in [
         ("kern/mm/pmm.c", "test_lab4_pmm_basic();", "test_lab4_edges();"),
         ("kern/process/proc.c", "test_lab4_process_create();", "test_lab4_fork_oom();"),
+        ("kern/process/proc.c", "test_lab4_schedule();", "test_lab4_lifecycle();"),
     ]:
         path = root / relative
         text = path.read_text()
@@ -24,13 +37,16 @@ with tempfile.TemporaryDirectory(prefix="lab4-edges-") as temp:
     build = subprocess.run(["make", "-s"], cwd=root, capture_output=True, text=True)
     if build.returncode:
         raise RuntimeError(build.stdout + build.stderr)
-    # Framework do_exit panics; its monitor immediately requests SBI shutdown.
-    result = subprocess.run(["timeout", "8s", "qemu-system-riscv64", "-machine", "virt",
+    # A clean shutdown is allowed only after idle reaps all exited threads.
+    result = subprocess.run(["timeout", "30s", "qemu-system-riscv64", "-machine", "virt",
         "-nographic", "-bios", "default", "-kernel", "bin/ucore.img", "-monitor", "none"],
         cwd=root, capture_output=True, text=True)
     print(result.stdout)
     assert result.returncode == 0, result.stderr
     for message in ["[Edge PMM OOM rollback] PASS", "[Edge fork OOM cleanup] PASS",
-                    "[Test Schedule] PASS", "process exit!!"]:
+                    "[Test Schedule] PASS", "[Lifecycle idle adoption] PASS",
+                    "[Lifecycle repeated create/exit/reap, free pages restored] PASS",
+                    "[Process cleanup] all kernel threads reaped"]:
         assert message in result.stdout, message
-    print("All additional Lab 4 failure-path checks passed.")
+    assert "kernel panic" not in result.stdout
+    print("All additional Lab 4 failure-path and lifecycle checks passed.")
